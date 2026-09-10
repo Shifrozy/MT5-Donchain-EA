@@ -22,8 +22,6 @@
 #property version   "1.20"
 #property strict
 
-#resource "Donchian Channel.ex5"
-
 #include <Trade\Trade.mqh>
 
 //+------------------------------------------------------------------+
@@ -176,9 +174,7 @@ int OnInit()
      }
 
 //--- Attach Donchian Channel indicator to chart for live visual lines (Blue/Gray/Red)
-   g_indHandle = iCustom(_Symbol, PERIOD_CURRENT, "::Donchian Channel.ex5", Period_of_Channel, Showprice_of_the_Level);
-   if(g_indHandle == INVALID_HANDLE)
-      g_indHandle = iCustom(_Symbol, PERIOD_CURRENT, "Donchian Channel", Period_of_Channel, Showprice_of_the_Level);
+   g_indHandle = iCustom(_Symbol, PERIOD_CURRENT, "Donchian Channel", Period_of_Channel, Showprice_of_the_Level);
    if(g_indHandle == INVALID_HANDLE)
       g_indHandle = iCustom(_Symbol, PERIOD_CURRENT, "Indicators\\Donchian Channel", Period_of_Channel, Showprice_of_the_Level);
 
