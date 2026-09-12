@@ -529,11 +529,19 @@ double CalculateFloatingBasketPL()
 //| are NOT counted toward the basket loss. This means cumulative      |
 //| daily losses can far exceed the Max_Basket_Loss threshold.         |
 //|                                                                    |
+//| OVERNIGHT FIX: Handles positions opened before midnight that close |
+//| after midnight. For these, the opening deal is outside today's     |
+//| HistorySelect range, so we use HistorySelectByPosition() to look   |
+//| up the original opening deal's comment from any date.              |
+//|                                                                    |
 //| Algorithm:                                                         |
 //| 1. Select all deals from today (00:00 server time to now)          |
-//| 2. Find all OPENING deals with our basket tag in comment           |
-//| 3. Collect their position IDs                                      |
-//| 4. Sum profit/swap/commission from CLOSING deals of those positions|
+//| 2. Collect today's OPENING deals with basket tag -> basketPosIds   |
+//| 3. Collect ALL today's CLOSING deals -> arrays (ticket,posId,pnl)  |
+//| 4. For closing deals whose posId is NOT in basketPosIds, use       |
+//|    HistorySelectByPosition() to find the original opening deal     |
+//|    and check if it has the basket tag (overnight positions)         |
+//| 5. Sum profit/swap/commission from basket-tagged closing deals     |
 //|                                                                    |
 //| We check the OPENING deal's comment (not closing deal) because     |
 //| MT5 may modify the closing deal comment (e.g., "[sl]", "[tp]").    |
@@ -556,10 +564,17 @@ double CalculateRealizedBasketPL()
    if(totalDeals == 0)
       return 0;
 
-//--- First pass: collect position IDs from OPENING deals belonging to our basket
-   ulong basketPosIds[];
-   int   idCount = 0;
+//--- Arrays for today's closing deals (stored before any HistorySelectByPosition calls)
+   ulong  closingTickets[];
+   ulong  closingPosIds[];
+   double closingProfits[];
+   int    closingCount = 0;
 
+//--- Array for basket position IDs found in today's opening deals
+   ulong basketPosIds[];
+   int   basketCount = 0;
+
+//--- Single pass: collect today's opening basket positions AND all closing deals
    for(int i = 0; i < totalDeals; i++)
      {
       ulong ticket = HistoryDealGetTicket(i);
@@ -567,45 +582,96 @@ double CalculateRealizedBasketPL()
          continue;
 
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
-      if(entry != DEAL_ENTRY_IN)
-         continue;
 
-      string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
-      if(StringFind(comment, g_basketTag) >= 0)
+      if(entry == DEAL_ENTRY_IN)
         {
-         long posId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
-         ArrayResize(basketPosIds, idCount + 1);
-         basketPosIds[idCount] = (ulong)posId;
-         idCount++;
+         //--- Opening deal today: check for basket tag
+         string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
+         if(StringFind(comment, g_basketTag) >= 0)
+           {
+            long posId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+            ArrayResize(basketPosIds, basketCount + 1);
+            basketPosIds[basketCount] = (ulong)posId;
+            basketCount++;
+           }
+        }
+      else
+         if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
+           {
+            //--- Closing deal today: store its details for later processing
+            ArrayResize(closingTickets, closingCount + 1);
+            ArrayResize(closingPosIds, closingCount + 1);
+            ArrayResize(closingProfits, closingCount + 1);
+            closingTickets[closingCount] = ticket;
+            closingPosIds[closingCount]  = (ulong)HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+            closingProfits[closingCount] = HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                                           + HistoryDealGetDouble(ticket, DEAL_SWAP)
+                                           + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+            closingCount++;
+           }
+     }
+
+   if(closingCount == 0)
+      return 0;
+
+//--- OVERNIGHT FIX: For closing deals whose posId is NOT in basketPosIds
+//--- (meaning the position was opened before midnight), use
+//--- HistorySelectByPosition to find the original opening deal from any date
+   for(int i = 0; i < closingCount; i++)
+     {
+      //--- Check if this position is already identified as a basket position
+      bool alreadyFound = false;
+      for(int j = 0; j < basketCount; j++)
+        {
+         if(closingPosIds[i] == basketPosIds[j])
+           {
+            alreadyFound = true;
+            break;
+           }
+        }
+
+      if(!alreadyFound)
+        {
+         //--- Opening deal was NOT in today's history -> position opened before midnight
+         //--- Use HistorySelectByPosition to load ALL deals for this position
+         if(HistorySelectByPosition((long)closingPosIds[i]))
+           {
+            int posDeals = HistoryDealsTotal();
+            for(int k = 0; k < posDeals; k++)
+              {
+               ulong dealTicket = HistoryDealGetTicket(k);
+               if(dealTicket <= 0)
+                  continue;
+
+               ENUM_DEAL_ENTRY dealEntry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+               if(dealEntry == DEAL_ENTRY_IN)
+                 {
+                  //--- Found the original opening deal: check its comment
+                  string comment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+                  if(StringFind(comment, g_basketTag) >= 0)
+                    {
+                     //--- This overnight position belongs to our basket
+                     ArrayResize(basketPosIds, basketCount + 1);
+                     basketPosIds[basketCount] = closingPosIds[i];
+                     basketCount++;
+                    }
+                  break;  // Only one opening deal per position
+                 }
+              }
+           }
         }
      }
 
-   if(idCount == 0)
-      return 0;
-
-//--- Second pass: sum profit from CLOSING deals of basket positions
+//--- Final: sum profits from all closing deals that belong to basket positions
    double realizedPL = 0;
 
-   for(int i = 0; i < totalDeals; i++)
+   for(int i = 0; i < closingCount; i++)
      {
-      ulong ticket = HistoryDealGetTicket(i);
-      if(ticket <= 0)
-         continue;
-
-      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
-      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT)
-         continue;
-
-      long posId = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
-
-      //--- Check if this closing deal belongs to a basket position
-      for(int j = 0; j < idCount; j++)
+      for(int j = 0; j < basketCount; j++)
         {
-         if(basketPosIds[j] == (ulong)posId)
+         if(closingPosIds[i] == basketPosIds[j])
            {
-            realizedPL += HistoryDealGetDouble(ticket, DEAL_PROFIT)
-                          + HistoryDealGetDouble(ticket, DEAL_SWAP)
-                          + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+            realizedPL += closingProfits[i];
             break;
            }
         }
