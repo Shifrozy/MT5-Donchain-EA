@@ -17,3 +17,8 @@ Desktop.ini
 .tempmediaStorage/
 .user_uploaded/
 .system_generated/
+
+# User Guides & delivery documents (local only)
+*User_Guide*.pdf
+User_Guide.pdf
+generate_pdf.py
