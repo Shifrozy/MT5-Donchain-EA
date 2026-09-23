@@ -262,9 +262,15 @@ void OnTick()
    DrawDonchianChannel();
    UpdateChartDisplay();
 
-//--- 4. If basket is locked, block all new entries
-   if(Enable_Basket_Floating_PL && IsBasketLocked())
-      return;
+//--- 4. If basket is locked OR closing is in progress, block all new entries
+   if(Enable_Basket_Floating_PL)
+     {
+      if(IsBasketLocked())
+         return;
+      //--- Also block if another instance is currently closing the basket
+      if(GlobalVariableCheck(g_gvClosingName) && GlobalVariableGet(g_gvClosingName) > 0)
+         return;
+     }
 
 //--- 5. Check if this instance already has an open trade (max 1 per pair)
    if(HasOpenTrade())
@@ -780,6 +786,15 @@ void MonitorBasketPL()
       if(!GlobalVariableSetOnCondition(g_gvClosingName, 1, 0))
          return;  // Another instance already claimed the close
 
+      //--- IMMEDIATELY set the daily lock BEFORE closing positions
+      //--- This blocks ALL new entries across every chart instance
+      //--- while the close-all process runs (prevents race condition)
+      if(Lock_Trading_After_Target)
+        {
+         SetBasketLock();
+         Print("Basket ENTRY BLOCKED for Basket_ID: ", Basket_ID);
+        }
+
       Print("==============================================");
       Print(reason, " REACHED!");
       Print("Total P/L: ", DoubleToString(totalPL, 2), " USD",
@@ -790,12 +805,14 @@ void MonitorBasketPL()
       //--- Close all currently open basket positions
       CloseAllBasketPositions();
 
-      //--- Set the daily trading lock
-      if(Lock_Trading_After_Target)
-        {
-         SetBasketLock();
-         Print("Basket LOCKED for the remainder of the trading day");
-        }
+      //--- Confirm basket is flat (no remaining positions)
+      double remainingPL = CalculateFloatingBasketPL();
+      if(MathAbs(remainingPL) < 0.01)
+         Print("Basket confirmed FLAT - no remaining positions");
+      else
+         Print("WARNING: Residual floating P/L after close: ", DoubleToString(remainingPL, 2));
+
+      Print("Basket LOCKED for the remainder of the trading day");
 
       Print("==============================================");
 
