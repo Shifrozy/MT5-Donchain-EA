@@ -17,9 +17,10 @@
 //|  - Manual Reset_Daily_Lock and auto-reset at 00:00 server time   |
 //|  - Maximum 1 open trade per EA instance/pair                     |
 //|  - On-chart Donchian level visualization & signal arrows         |
+//|  - Session extreme tracking (Max Drawdown / Max Profit)          |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "1.20"
+#property version   "1.30"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -80,6 +81,8 @@ string            g_basketTag;          // Comment tag for basket identification
 string            g_gvLockName;         // GV name: basket lock state
 string            g_gvLockDateName;     // GV name: lock date (for daily reset)
 string            g_gvClosingName;      // GV name: closing flag (prevents duplicate ops)
+string            g_gvMaxDrawdownName;  // GV name: session max drawdown (cross-chart shared)
+string            g_gvMaxProfitName;    // GV name: session max profit (cross-chart shared)
 string            g_objPrefix;          // Unique prefix for chart objects
 int               g_indHandle;          // Donchian Channel indicator handle for chart visual
 
@@ -87,6 +90,10 @@ int               g_indHandle;          // Donchian Channel indicator handle for
 int               g_lastDealCount;      // Last known deal count for cache invalidation
 double            g_cachedRealizedPL;   // Cached realized P/L value
 datetime          g_cachedDate;         // Date of cached value
+
+//--- Session extreme tracking (display only - does not affect trading logic)
+double            g_sessionMaxDrawdown; // Lowest Total Basket P/L seen this session
+double            g_sessionMaxProfit;   // Highest Total Basket P/L seen this session
 
 //--- Color arrays for Donchian level visualization
 color             g_upperColors[4];     // Colors for upper Donchian levels
@@ -136,11 +143,22 @@ int OnInit()
 //--- Setup Global Variable names for cross-chart coordination
    g_gvLockName     = "DC_BasketLock_" + IntegerToString(Basket_ID);
    g_gvLockDateName = "DC_LockDate_"   + IntegerToString(Basket_ID);
-   g_gvClosingName  = "DC_Closing_"    + IntegerToString(Basket_ID);
+   g_gvClosingName     = "DC_Closing_"      + IntegerToString(Basket_ID);
+   g_gvMaxDrawdownName = "DC_MaxDrawdown_"  + IntegerToString(Basket_ID);
+   g_gvMaxProfitName   = "DC_MaxProfit_"    + IntegerToString(Basket_ID);
 
 //--- Initialize closing flag GV if it doesn't exist
    if(!GlobalVariableCheck(g_gvClosingName))
       GlobalVariableSet(g_gvClosingName, 0);
+
+//--- Initialize session extreme tracking from shared GVs
+//--- (so all chart instances share the same session extremes)
+   g_sessionMaxDrawdown = 0;
+   g_sessionMaxProfit   = 0;
+   if(GlobalVariableCheck(g_gvMaxDrawdownName))
+      g_sessionMaxDrawdown = GlobalVariableGet(g_gvMaxDrawdownName);
+   if(GlobalVariableCheck(g_gvMaxProfitName))
+      g_sessionMaxProfit = GlobalVariableGet(g_gvMaxProfitName);
 
 //--- Configure CTrade object
    g_trade.SetExpertMagicNumber(Magic_Number);
@@ -170,6 +188,7 @@ int OnInit()
    if(Reset_Daily_Lock)
      {
       ClearBasketLock();
+      ResetSessionExtremes();
       Print("Manual basket lock reset for Basket_ID: ", Basket_ID);
      }
 
@@ -192,7 +211,7 @@ int OnInit()
 
 //--- Display initialization summary
    Print("==============================================");
-   Print("Donchian Channel EA v1.20 Initialized");
+   Print("Donchian Channel EA v1.30 Initialized");
    Print("Symbol: ", _Symbol, " | Magic: ", Magic_Number);
    Print("Strategy: ", EnumToString(Strategy_Mode));
    Print("Confirm Directions: ", g_confirmDir, " of 4");
@@ -763,6 +782,9 @@ void MonitorBasketPL()
    double realizedPL = GetCachedRealizedPL();
    double totalPL    = floatingPL + realizedPL;
 
+//--- Update session extreme tracking (display only - no effect on trading)
+   UpdateSessionExtremes(totalPL);
+
    bool   shouldClose = false;
    string reason      = "";
 
@@ -904,6 +926,55 @@ void ClearBasketLock()
   }
 
 //+------------------------------------------------------------------+
+//| Reset session extreme tracking values                              |
+//| Called when a new session begins (daily reset or manual reset)     |
+//+------------------------------------------------------------------+
+void ResetSessionExtremes()
+  {
+   g_sessionMaxDrawdown = 0;
+   g_sessionMaxProfit   = 0;
+   GlobalVariableSet(g_gvMaxDrawdownName, 0);
+   GlobalVariableSet(g_gvMaxProfitName, 0);
+   Print("Session extremes reset (Max Drawdown / Max Profit)");
+  }
+
+//+------------------------------------------------------------------+
+//| Update session extreme tracking values                             |
+//| Called from MonitorBasketPL on every tick with the current totalPL |
+//| This is display-only tracking - does NOT affect trading logic      |
+//+------------------------------------------------------------------+
+void UpdateSessionExtremes(double totalPL)
+  {
+//--- Update max drawdown (lowest P/L seen this session)
+   if(totalPL < g_sessionMaxDrawdown)
+     {
+      g_sessionMaxDrawdown = totalPL;
+      GlobalVariableSet(g_gvMaxDrawdownName, g_sessionMaxDrawdown);
+     }
+
+//--- Update max profit (highest P/L seen this session)
+   if(totalPL > g_sessionMaxProfit)
+     {
+      g_sessionMaxProfit = totalPL;
+      GlobalVariableSet(g_gvMaxProfitName, g_sessionMaxProfit);
+     }
+
+//--- Also read from shared GVs in case another chart instance updated them
+   if(GlobalVariableCheck(g_gvMaxDrawdownName))
+     {
+      double sharedDD = GlobalVariableGet(g_gvMaxDrawdownName);
+      if(sharedDD < g_sessionMaxDrawdown)
+         g_sessionMaxDrawdown = sharedDD;
+     }
+   if(GlobalVariableCheck(g_gvMaxProfitName))
+     {
+      double sharedMP = GlobalVariableGet(g_gvMaxProfitName);
+      if(sharedMP > g_sessionMaxProfit)
+         g_sessionMaxProfit = sharedMP;
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Check for automatic daily reset at 00:00 broker/server time        |
 //+------------------------------------------------------------------+
 void CheckDailyReset()
@@ -922,6 +993,9 @@ void CheckDailyReset()
    if(lockDate > 0 && currentDate > lockDate)
      {
       ClearBasketLock();
+
+      //--- Reset session extreme tracking for the new session
+      ResetSessionExtremes();
 
       //--- Also reset the realized P/L cache for the new day
       g_cachedRealizedPL = 0;
@@ -1122,7 +1196,7 @@ void UpdateChartDisplay()
    string nl = "\n";
    string display = "";
 
-   display += "===  DONCHIAN CHANNEL EA v1.10  ===" + nl;
+   display += "===  DONCHIAN CHANNEL EA v1.30  ===" + nl;
    display += _Symbol + "  |  Magic: " + IntegerToString(Magic_Number) + nl;
    display += "Mode: " + EnumToString(Strategy_Mode)
               + "  |  Confirm: " + IntegerToString(g_confirmDir) + "/4" + nl;
@@ -1169,6 +1243,13 @@ void UpdateChartDisplay()
          display += "Max Loss:     -" + DoubleToString(Max_Basket_Loss_USD, 2) + " USD" + nl;
       if(Max_Basket_Profit_USD > 0)
          display += "Max Profit:   +" + DoubleToString(Max_Basket_Profit_USD, 2) + " USD" + nl;
+
+      //--- Session extreme tracking display
+      display += "·····································" + nl;
+      string ddSign = (g_sessionMaxDrawdown <= 0) ? "" : "+";
+      string mpSign = (g_sessionMaxProfit >= 0) ? "+" : "";
+      display += "Session Max DD:   " + ddSign + DoubleToString(g_sessionMaxDrawdown, 2) + " USD" + nl;
+      display += "Session Max Pft:  " + mpSign + DoubleToString(g_sessionMaxProfit, 2) + " USD" + nl;
 
       if(IsBasketLocked())
          display += "Status: >>> LOCKED <<<" + nl;
