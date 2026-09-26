@@ -1245,7 +1245,7 @@ void UpdateChartDisplay()
          display += "Max Profit:   +" + DoubleToString(Max_Basket_Profit_USD, 2) + " USD" + nl;
 
       //--- Session extreme tracking display
-      display += "·····································" + nl;
+      display += "....................................." + nl;
       string ddSign = (g_sessionMaxDrawdown <= 0) ? "" : "+";
       string mpSign = (g_sessionMaxProfit >= 0) ? "+" : "";
       display += "Session Max DD:   " + ddSign + DoubleToString(g_sessionMaxDrawdown, 2) + " USD" + nl;
