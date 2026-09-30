@@ -1255,78 +1255,224 @@ void DrawSignalArrow(ENUM_SIGNAL_TYPE signal, double price)
   }
 
 //+------------------------------------------------------------------+
-//| Update chart display panel with comprehensive info                 |
+//| Dashboard Panel Helper: Create or update a rectangular shape      |
+//+------------------------------------------------------------------+
+void SetDashboardRect(string name, int x, int y, int width, int height,
+                      color bgColor, color borderColor = clrNONE, int zOrder = 0)
+  {
+   if(ObjectFind(0, name) < 0)
+     {
+      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+     }
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, width);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, height);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bgColor);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, borderColor);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, zOrder);
+  }
+
+//+------------------------------------------------------------------+
+//| Dashboard Panel Helper: Create or update a text label              |
+//+------------------------------------------------------------------+
+void SetDashboardText(string name, int x, int y, string text, color clr,
+                      ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_UPPER,
+                      int fontSize = 8, string font = "Arial", bool bold = false)
+  {
+   if(ObjectFind(0, name) < 0)
+     {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+     }
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
+  }
+
+//+------------------------------------------------------------------+
+//| Update chart display panel with comprehensive info (Boxed Overlay) |
 //+------------------------------------------------------------------+
 void UpdateChartDisplay()
   {
-   string nl = "\n";
-   string display = "";
+   string pfx = g_objPrefix + "Pnl_";
 
-   display += "===  DONCHIAN CHANNEL EA v1.30  ===" + nl;
-   display += _Symbol + "  |  Magic: " + IntegerToString(Magic_Number) + nl;
-   display += "Mode: " + EnumToString(Strategy_Mode)
-              + "  |  Confirm: " + IntegerToString(g_confirmDir) + "/4" + nl;
-   display += "-------------------------------------" + nl;
+   int panelX = 15;
+   int panelY = 20;
+   int panelW = 285;
+   int rowH   = 17;
 
-//--- Show Donchian levels for each timeframe with touch status
+   int xLeft   = panelX + 10;
+   int xRight  = panelX + panelW - 10;
+   int xCenter = panelX + (panelW / 2);
+
+   //--- Calculate total panel height based on active features
+   int totalPanelHeight = 284;
+   if(!Enable_Basket_Floating_PL)
+      totalPanelHeight = 172;
+   else if(Max_Basket_Loss_USD <= 0 && Max_Basket_Profit_USD <= 0)
+      totalPanelHeight = 267;
+
+   //--- 1. Main Background Panel (solid dark charcoal/slate)
+   SetDashboardRect(pfx + "MainBg", panelX, panelY, panelW, totalPanelHeight, C'24,30,34', C'60,75,80', 0);
+
+   //--- 2. Header Banner (dark olive green matching professional trading theme)
+   SetDashboardRect(pfx + "HdrBg", panelX, panelY, panelW, 26, C'48,68,44', C'65,90,60', 1);
+   SetDashboardText(pfx + "HdrTitle", xCenter, panelY + 6, "Donchian Channel EA v1.31", clrWhite, ANCHOR_UPPER, 9, "Arial Bold", true);
+
+   int y = panelY + 32;
+
+   //--- 3. Symbol & Magic Number
+   SetDashboardText(pfx + "L_Sym", xLeft, y, "Symbol: " + _Symbol, clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+   SetDashboardText(pfx + "V_Magic", xRight, y, "Magic: " + IntegerToString(Magic_Number), clrWhite, ANCHOR_RIGHT_UPPER, 8, "Arial");
+   y += rowH;
+
+   //--- 4. Strategy Mode & Confirmations
+   string modeStr = (Strategy_Mode == SameDirection ? "Same Dir" : "Inverse");
+   SetDashboardText(pfx + "L_Mode", xLeft, y, "Mode: " + modeStr, clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+   SetDashboardText(pfx + "V_Conf", xRight, y, "Confirm: " + IntegerToString(g_confirmDir) + "/4 TFs", clrWhite, ANCHOR_RIGHT_UPPER, 8, "Arial");
+   y += rowH;
+
+   //--- Separator 1
+   SetDashboardRect(pfx + "Sep1", xLeft, y + 2, panelW - 20, 1, C'45,55,62', clrNONE, 1);
+   y += 8;
+
+   //--- 5. Donchian Levels for each timeframe with live touch status
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
    for(int i = 0; i < 4; i++)
      {
       double upper, lower;
       string tfName = EnumToString(g_timeframes[i]);
+      if(StringFind(tfName, "PERIOD_") == 0)
+         tfName = StringSubstr(tfName, 7);
+
+      string lblName = pfx + "TF_L_" + IntegerToString(i);
+      string valName = pfx + "TF_V_" + IntegerToString(i);
 
       if(GetDonchianLevels(g_timeframes[i], upper, lower))
         {
-         string touchUpper = (bid >= upper) ? " << HIT" : "";
-         string touchLower = (bid <= lower) ? " << HIT" : "";
+         bool hitUp = (bid >= upper);
+         bool hitDn = (bid <= lower);
 
-         display += tfName + ":  UP " + DoubleToString(upper, _Digits) + touchUpper + nl;
-         display += "          DN " + DoubleToString(lower, _Digits) + touchLower + nl;
+         color tfClr = (hitUp || hitDn) ? clrGold : clrLightGray;
+         string tfText = tfName + ":";
+         if(hitUp) tfText += "  [HIT UP]";
+         else if(hitDn) tfText += "  [HIT DN]";
+
+         string valText = "U: " + DoubleToString(upper, _Digits) + "  D: " + DoubleToString(lower, _Digits);
+
+         SetDashboardText(lblName, xLeft, y, tfText, tfClr, ANCHOR_LEFT_UPPER, 8, "Arial");
+         SetDashboardText(valName, xRight, y, valText, (hitUp || hitDn) ? clrYellow : clrWhite, ANCHOR_RIGHT_UPPER, 8, "Arial");
         }
       else
         {
-         display += tfName + ":  Waiting for data..." + nl;
+         SetDashboardText(lblName, xLeft, y, tfName + ":", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+         SetDashboardText(valName, xRight, y, "Waiting for data...", clrGray, ANCHOR_RIGHT_UPPER, 8, "Arial");
         }
+      y += rowH;
      }
 
-//--- Show basket information
+   //--- Separator 2
+   SetDashboardRect(pfx + "Sep2", xLeft, y + 2, panelW - 20, 1, C'45,55,62', clrNONE, 1);
+   y += 8;
+
+   //--- 6. Basket Money Management Section
    if(Enable_Basket_Floating_PL)
      {
-      display += "-------------------------------------" + nl;
-      display += "BASKET ID: " + IntegerToString(Basket_ID) + nl;
+      //--- Basket ID & Status
+      bool locked = IsBasketLocked();
+      string statusText = locked ? "[LOCKED]" : "[ACTIVE]";
+      color  statusClr  = locked ? clrOrangeRed : clrLime;
 
+      SetDashboardText(pfx + "L_BskId", xLeft, y, "Basket ID: " + IntegerToString(Basket_ID), clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+      SetDashboardText(pfx + "V_Status", xRight, y, statusText, statusClr, ANCHOR_RIGHT_UPPER, 8, "Arial", true);
+      y += rowH;
+
+      //--- Total Basket P/L (Floating + Realized)
       double floatingPL = CalculateFloatingBasketPL();
       double realizedPL = GetCachedRealizedPL();
       double totalPL    = floatingPL + realizedPL;
 
       string sign = (totalPL >= 0) ? "+" : "";
-      display += "Total P/L:    " + sign + DoubleToString(totalPL, 2) + " USD" + nl;
-      display += "  Floating:   " + DoubleToString(floatingPL, 2) + " USD" + nl;
-      display += "  Realized:   " + DoubleToString(realizedPL, 2) + " USD" + nl;
+      color  totalClr = (totalPL > 0) ? clrLime : (totalPL < 0 ? clrTomato : clrWhite);
+      string totalStr = sign + DoubleToString(totalPL, 2) + " USD";
 
-      if(Max_Basket_Loss_USD > 0)
-         display += "Max Loss:     -" + DoubleToString(Max_Basket_Loss_USD, 2) + " USD" + nl;
-      if(Max_Basket_Profit_USD > 0)
-         display += "Max Profit:   +" + DoubleToString(Max_Basket_Profit_USD, 2) + " USD" + nl;
+      SetDashboardText(pfx + "L_TotPL", xLeft, y, "Total Basket P/L:", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+      SetDashboardText(pfx + "V_TotPL", xRight, y, totalStr, totalClr, ANCHOR_RIGHT_UPPER, 8, "Arial", true);
+      y += rowH;
 
-      //--- Session extreme tracking display
-      display += "....................................." + nl;
+      //--- Floating / Realized Breakdown
+      string fltSign = (floatingPL >= 0) ? "+" : "";
+      string relSign = (realizedPL >= 0) ? "+" : "";
+      string splitStr = "F: " + fltSign + DoubleToString(floatingPL, 2) + " | R: " + relSign + DoubleToString(realizedPL, 2);
+
+      SetDashboardText(pfx + "L_SplitPL", xLeft, y, "Floating / Realized:", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+      SetDashboardText(pfx + "V_SplitPL", xRight, y, splitStr, C'200,215,225', ANCHOR_RIGHT_UPPER, 8, "Arial");
+      y += rowH;
+
+      //--- Basket Limits (Loss / Profit Targets)
+      if(Max_Basket_Loss_USD > 0 || Max_Basket_Profit_USD > 0)
+        {
+         string lossStr = (Max_Basket_Loss_USD > 0) ? "-" + DoubleToString(Max_Basket_Loss_USD, 0) : "-";
+         string pftStr  = (Max_Basket_Profit_USD > 0) ? "+" + DoubleToString(Max_Basket_Profit_USD, 0) : "-";
+         string tgtStr  = lossStr + " / " + pftStr + " USD";
+
+         SetDashboardText(pfx + "L_Tgt", xLeft, y, "Targets (Loss / Pft):", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+         SetDashboardText(pfx + "V_Tgt", xRight, y, tgtStr, C'170,195,210', ANCHOR_RIGHT_UPPER, 8, "Arial");
+         y += rowH;
+        }
+
+      //--- Separator 3
+      SetDashboardRect(pfx + "Sep3", xLeft, y + 2, panelW - 20, 1, C'45,55,62', clrNONE, 1);
+      y += 8;
+
+      //--- Session Max Drawdown
       string ddSign = (g_sessionMaxDrawdown <= 0) ? "" : "+";
-      string mpSign = (g_sessionMaxProfit >= 0) ? "+" : "";
-      display += "Session Max DD:   " + ddSign + DoubleToString(g_sessionMaxDrawdown, 2) + " USD" + nl;
-      display += "Session Max Pft:  " + mpSign + DoubleToString(g_sessionMaxProfit, 2) + " USD" + nl;
+      color  ddClr  = (g_sessionMaxDrawdown < 0) ? clrTomato : clrWhite;
+      string ddStr  = ddSign + DoubleToString(g_sessionMaxDrawdown, 2) + " USD";
 
-      if(IsBasketLocked())
-         display += "Status: >>> LOCKED <<<" + nl;
-      else
-         display += "Status: ACTIVE" + nl;
+      SetDashboardText(pfx + "L_MaxDD", xLeft, y, "Session Max DD:", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+      SetDashboardText(pfx + "V_MaxDD", xRight, y, ddStr, ddClr, ANCHOR_RIGHT_UPPER, 8, "Arial");
+      y += rowH;
+
+      //--- Session Max Profit
+      string mpSign = (g_sessionMaxProfit >= 0) ? "+" : "";
+      color  mpClr  = (g_sessionMaxProfit > 0) ? clrLime : clrWhite;
+      string mpStr  = mpSign + DoubleToString(g_sessionMaxProfit, 2) + " USD";
+
+      SetDashboardText(pfx + "L_MaxMP", xLeft, y, "Session Max Profit:", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+      SetDashboardText(pfx + "V_MaxMP", xRight, y, mpStr, mpClr, ANCHOR_RIGHT_UPPER, 8, "Arial");
+      y += rowH;
+
+      //--- Separator 4
+      SetDashboardRect(pfx + "Sep4", xLeft, y + 2, panelW - 20, 1, C'45,55,62', clrNONE, 1);
+      y += 8;
      }
 
-   display += "-------------------------------------" + nl;
-   display += "Bid: " + DoubleToString(bid, _Digits) + nl;
+   //--- 7. Current Market Bid Price
+   SetDashboardText(pfx + "L_Bid", xLeft, y, "Bid Price:", clrLightGray, ANCHOR_LEFT_UPPER, 8, "Arial");
+   SetDashboardText(pfx + "V_Bid", xRight, y, DoubleToString(bid, _Digits), clrWhite, ANCHOR_RIGHT_UPPER, 8, "Arial");
+   y += rowH;
 
-   Comment(display);
+   //--- Clear legacy chart comment and force redraw
+   Comment("");
+   ChartRedraw(0);
   }
 
 //+------------------------------------------------------------------+
