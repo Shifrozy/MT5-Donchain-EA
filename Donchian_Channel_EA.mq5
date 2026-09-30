@@ -20,7 +20,7 @@
 //|  - Session extreme tracking (Max Drawdown / Max Profit)          |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "1.30"
+#property version   "1.31"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -83,6 +83,9 @@ string            g_gvLockDateName;     // GV name: lock date (for daily reset)
 string            g_gvClosingName;      // GV name: closing flag (prevents duplicate ops)
 string            g_gvMaxDrawdownName;  // GV name: session max drawdown (cross-chart shared)
 string            g_gvMaxProfitName;    // GV name: session max profit (cross-chart shared)
+string            g_gvSessionDateName;  // GV name: current session date (cross-chart shared)
+string            g_gvResetSeqName;     // GV name: reset sequence counter (cross-chart sync)
+int               g_lastResetSeq;       // Last processed reset sequence counter for this chart
 string            g_objPrefix;          // Unique prefix for chart objects
 int               g_indHandle;          // Donchian Channel indicator handle for chart visual
 
@@ -146,19 +149,17 @@ int OnInit()
    g_gvClosingName     = "DC_Closing_"      + IntegerToString(Basket_ID);
    g_gvMaxDrawdownName = "DC_MaxDrawdown_"  + IntegerToString(Basket_ID);
    g_gvMaxProfitName   = "DC_MaxProfit_"    + IntegerToString(Basket_ID);
+   g_gvSessionDateName = "DC_SessionDate_"  + IntegerToString(Basket_ID);
+   g_gvResetSeqName    = "DC_ResetSeq_"     + IntegerToString(Basket_ID);
 
 //--- Initialize closing flag GV if it doesn't exist
    if(!GlobalVariableCheck(g_gvClosingName))
       GlobalVariableSet(g_gvClosingName, 0);
 
-//--- Initialize session extreme tracking from shared GVs
-//--- (so all chart instances share the same session extremes)
+//--- Initialize reset sequence tracking for this chart instance
+   g_lastResetSeq       = -1;
    g_sessionMaxDrawdown = 0;
    g_sessionMaxProfit   = 0;
-   if(GlobalVariableCheck(g_gvMaxDrawdownName))
-      g_sessionMaxDrawdown = GlobalVariableGet(g_gvMaxDrawdownName);
-   if(GlobalVariableCheck(g_gvMaxProfitName))
-      g_sessionMaxProfit = GlobalVariableGet(g_gvMaxProfitName);
 
 //--- Configure CTrade object
    g_trade.SetExpertMagicNumber(Magic_Number);
@@ -184,12 +185,17 @@ int OnInit()
    g_cachedRealizedPL = 0;
    g_cachedDate       = 0;
 
-//--- Handle Manual Reset of Daily Lock
+//--- Handle Manual Reset of Daily Lock & Session Extremes
    if(Reset_Daily_Lock)
      {
       ClearBasketLock();
       ResetSessionExtremes();
-      Print("Manual basket lock reset for Basket_ID: ", Basket_ID);
+      Print("Manual basket lock and session reset for Basket_ID: ", Basket_ID);
+     }
+   else
+     {
+      //--- Check for new trading day or sync with existing active session
+      CheckDailyReset();
      }
 
 //--- Attach Donchian Channel indicator to chart for live visual lines (Blue/Gray/Red)
@@ -211,7 +217,7 @@ int OnInit()
 
 //--- Display initialization summary
    Print("==============================================");
-   Print("Donchian Channel EA v1.30 Initialized");
+   Print("Donchian Channel EA v1.31 Initialized");
    Print("Symbol: ", _Symbol, " | Magic: ", Magic_Number);
    Print("Strategy: ", EnumToString(Strategy_Mode));
    Print("Confirm Directions: ", g_confirmDir, " of 4");
@@ -233,6 +239,9 @@ int OnInit()
      }
    Print("Basket tracks: Floating P/L + Daily Realized P/L");
    Print("==============================================");
+
+//--- Render chart dashboard immediately on load (even if market is closed / no ticks yet)
+   UpdateChartDisplay();
 
    return(INIT_SUCCEEDED);
   }
@@ -773,10 +782,6 @@ void MonitorBasketPL()
          return;
      }
 
-//--- Skip if both thresholds are disabled
-   if(Max_Basket_Loss_USD <= 0 && Max_Basket_Profit_USD <= 0)
-      return;
-
 //--- Calculate TOTAL basket P/L (floating + realized)
    double floatingPL = CalculateFloatingBasketPL();
    double realizedPL = GetCachedRealizedPL();
@@ -784,6 +789,10 @@ void MonitorBasketPL()
 
 //--- Update session extreme tracking (display only - no effect on trading)
    UpdateSessionExtremes(totalPL);
+
+//--- Skip threshold enforcement if both thresholds are disabled
+   if(Max_Basket_Loss_USD <= 0 && Max_Basket_Profit_USD <= 0)
+      return;
 
    bool   shouldClose = false;
    string reason      = "";
@@ -931,11 +940,36 @@ void ClearBasketLock()
 //+------------------------------------------------------------------+
 void ResetSessionExtremes()
   {
+   datetime now = TimeCurrent();
+   if(now == 0)
+      now = TimeTradeServer();
+   if(now == 0)
+      now = TimeLocal();
+
+   MqlDateTime dt;
+   TimeToStruct(now, dt);
+   double currentDate = dt.year * 10000.0 + dt.mon * 100.0 + dt.day;
+
+   //--- Reset local extremes to zero
    g_sessionMaxDrawdown = 0;
    g_sessionMaxProfit   = 0;
+
+   //--- Reset shared Global Variables in terminal memory
    GlobalVariableSet(g_gvMaxDrawdownName, 0);
    GlobalVariableSet(g_gvMaxProfitName, 0);
-   Print("Session extremes reset (Max Drawdown / Max Profit)");
+   GlobalVariableSet(g_gvSessionDateName, currentDate);
+
+   //--- Increment reset sequence counter so ALL other chart instances
+   //--- of this Basket_ID immediately detect the reset and force their
+   //--- local extremes back to zero
+   long newSeq = 1;
+   if(GlobalVariableCheck(g_gvResetSeqName))
+      newSeq = (long)GlobalVariableGet(g_gvResetSeqName) + 1;
+   GlobalVariableSet(g_gvResetSeqName, (double)newSeq);
+   g_lastResetSeq = (int)newSeq;
+
+   Print("Session extremes reset for Basket_ID: ", Basket_ID,
+         " | ResetSeq: ", newSeq, " | SessionDate: ", (int)currentDate);
   }
 
 //+------------------------------------------------------------------+
@@ -945,21 +979,7 @@ void ResetSessionExtremes()
 //+------------------------------------------------------------------+
 void UpdateSessionExtremes(double totalPL)
   {
-//--- Update max drawdown (lowest P/L seen this session)
-   if(totalPL < g_sessionMaxDrawdown)
-     {
-      g_sessionMaxDrawdown = totalPL;
-      GlobalVariableSet(g_gvMaxDrawdownName, g_sessionMaxDrawdown);
-     }
-
-//--- Update max profit (highest P/L seen this session)
-   if(totalPL > g_sessionMaxProfit)
-     {
-      g_sessionMaxProfit = totalPL;
-      GlobalVariableSet(g_gvMaxProfitName, g_sessionMaxProfit);
-     }
-
-//--- Also read from shared GVs in case another chart instance updated them
+//--- First, read shared GVs from other charts for this basket
    if(GlobalVariableCheck(g_gvMaxDrawdownName))
      {
       double sharedDD = GlobalVariableGet(g_gvMaxDrawdownName);
@@ -972,38 +992,84 @@ void UpdateSessionExtremes(double totalPL)
       if(sharedMP > g_sessionMaxProfit)
          g_sessionMaxProfit = sharedMP;
      }
+
+//--- Update max drawdown if current total basket P/L reached a new low
+   if(totalPL < g_sessionMaxDrawdown)
+     {
+      g_sessionMaxDrawdown = totalPL;
+      GlobalVariableSet(g_gvMaxDrawdownName, g_sessionMaxDrawdown);
+     }
+
+//--- Update max profit if current total basket P/L reached a new high
+   if(totalPL > g_sessionMaxProfit)
+     {
+      g_sessionMaxProfit = totalPL;
+      GlobalVariableSet(g_gvMaxProfitName, g_sessionMaxProfit);
+     }
   }
 
 //+------------------------------------------------------------------+
-//| Check for automatic daily reset at 00:00 broker/server time        |
+//| Check for automatic daily reset (at 00:00 or when EA restarts on   |
+//| a new day) and synchronize cross-chart resets for same Basket_ID   |
 //+------------------------------------------------------------------+
 void CheckDailyReset()
   {
-   if(!IsBasketLocked())
-      return;
+   datetime now = TimeCurrent();
+   if(now == 0)
+      now = TimeTradeServer();
+   if(now == 0)
+      now = TimeLocal();
 
    MqlDateTime dt_now;
-   TimeCurrent(dt_now);
+   TimeToStruct(now, dt_now);
    double currentDate = dt_now.year * 10000.0 + dt_now.mon * 100.0 + dt_now.day;
+
+   //--- 1. Check if a new trading day has started
+   double sessionDate = 0;
+   if(GlobalVariableCheck(g_gvSessionDateName))
+      sessionDate = GlobalVariableGet(g_gvSessionDateName);
 
    double lockDate = 0;
    if(GlobalVariableCheck(g_gvLockDateName))
       lockDate = GlobalVariableGet(g_gvLockDateName);
 
-   if(lockDate > 0 && currentDate > lockDate)
+   //--- Trigger daily reset if session date is missing, or if current day > session date,
+   //--- or if lock was set on an earlier day
+   bool isNewDay = (sessionDate == 0) || (currentDate > sessionDate) ||
+                   (lockDate > 0 && currentDate > lockDate);
+
+   if(isNewDay)
      {
+      //--- Clear lock from previous day (if any)
       ClearBasketLock();
 
-      //--- Reset session extreme tracking for the new session
+      //--- Reset shared & local extremes for the new trading day
       ResetSessionExtremes();
 
-      //--- Also reset the realized P/L cache for the new day
+      //--- Reset realized P/L cache for the new day
       g_cachedRealizedPL = 0;
       g_lastDealCount    = -1;
 
-      Print("Basket lock AUTO-RESET for new trading day");
+      Print("Basket lock and session AUTO-RESET for new trading day");
       Print("Basket_ID: ", Basket_ID,
             " | New date: ", dt_now.year, ".", dt_now.mon, ".", dt_now.day);
+      return;
+     }
+
+   //--- 2. Synchronize cross-chart reset sequence
+   //--- If another chart instance of the same Basket_ID triggered a reset
+   //--- (manual Reset_Daily_Lock or daily rollover), force local values to match
+   int currentSeq = 0;
+   if(GlobalVariableCheck(g_gvResetSeqName))
+      currentSeq = (int)GlobalVariableGet(g_gvResetSeqName);
+
+   if(currentSeq != g_lastResetSeq)
+     {
+      g_lastResetSeq       = currentSeq;
+      g_sessionMaxDrawdown = (GlobalVariableCheck(g_gvMaxDrawdownName)) ? GlobalVariableGet(g_gvMaxDrawdownName) : 0;
+      g_sessionMaxProfit   = (GlobalVariableCheck(g_gvMaxProfitName))   ? GlobalVariableGet(g_gvMaxProfitName)   : 0;
+      g_cachedRealizedPL   = 0;
+      g_lastDealCount      = -1;
      }
   }
 
