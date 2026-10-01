@@ -20,7 +20,7 @@
 //|  - Session extreme tracking (Max Drawdown / Max Profit)          |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "1.31"
+#property version   "1.32"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -169,6 +169,9 @@ int OnInit()
 //--- Setup unique chart object prefix (prevents conflicts between instances)
    g_objPrefix = "DC_" + IntegerToString(Magic_Number) + "_";
 
+//--- Clean up any existing or template-carried chart objects to ensure fresh Z-order
+   CleanupChartObjects();
+
 //--- Setup visualization colors for each timeframe
 //--- Upper channels: blue shades | Lower channels: red shades
    g_upperColors[0] = clrDodgerBlue;
@@ -217,7 +220,7 @@ int OnInit()
 
 //--- Display initialization summary
    Print("==============================================");
-   Print("Donchian Channel EA v1.31 Initialized");
+   Print("Donchian Channel EA v1.32 Initialized");
    Print("Symbol: ", _Symbol, " | Magic: ", Magic_Number);
    Print("Strategy: ", EnumToString(Strategy_Mode));
    Print("Confirm Directions: ", g_confirmDir, " of 4");
@@ -243,6 +246,9 @@ int OnInit()
 //--- Render chart dashboard immediately on load (even if market is closed / no ticks yet)
    UpdateChartDisplay();
 
+//--- Start high-efficiency 1-second timer for regular dashboard refresh & template sync
+   EventSetTimer(1);
+
    return(INIT_SUCCEEDED);
   }
 
@@ -251,6 +257,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
+//--- Stop background dashboard refresh timer
+   EventKillTimer();
+
 //--- Remove attached Donchian Channel indicator from chart
    if(g_indHandle != INVALID_HANDLE)
      {
@@ -317,6 +326,25 @@ void OnTick()
       if(OpenTrade(signal))
          DrawSignalArrow(signal, price);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Expert timer function - Periodic background dashboard refresh    |
+//| Ensures dashboard is updated when market is closed or on template|
+//+------------------------------------------------------------------+
+void OnTimer()
+  {
+   UpdateChartDisplay();
+  }
+
+//+------------------------------------------------------------------+
+//| Chart event handler                                              |
+//| Redraws dashboard on template application or chart resize        |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id == CHARTEVENT_CHART_CHANGE)
+      UpdateChartDisplay();
   }
 
 //+------------------------------------------------------------------+
@@ -1300,7 +1328,10 @@ void SetDashboardText(string name, int x, int y, string text, color clr,
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetString(0, name, OBJPROP_FONT, font);
+   string fontName = font;
+   if(bold && StringFind(font, "Bold") < 0)
+      fontName += " Bold";
+   ObjectSetString(0, name, OBJPROP_FONT, fontName);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, name, OBJPROP_ZORDER, 2);
   }
@@ -1333,7 +1364,7 @@ void UpdateChartDisplay()
 
    //--- 2. Header Banner (dark olive green matching professional trading theme)
    SetDashboardRect(pfx + "HdrBg", panelX, panelY, panelW, 26, C'48,68,44', C'65,90,60', 1);
-   SetDashboardText(pfx + "HdrTitle", xCenter, panelY + 6, "Donchian Channel EA v1.31", clrWhite, ANCHOR_UPPER, 9, "Arial Bold", true);
+   SetDashboardText(pfx + "HdrTitle", xCenter, panelY + 6, "Donchian Channel EA v1.32", clrWhite, ANCHOR_UPPER, 9, "Arial Bold", true);
 
    int y = panelY + 32;
 
@@ -1481,6 +1512,8 @@ void UpdateChartDisplay()
 void CleanupChartObjects()
   {
    ObjectsDeleteAll(0, g_objPrefix);
+   ObjectsDeleteAll(0, "DC_");
+   Comment("");
    ChartRedraw(0);
   }
 //+------------------------------------------------------------------+
